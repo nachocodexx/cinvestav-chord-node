@@ -1,0 +1,19 @@
+{
+
+  "commandId":"ADD_KEY",
+  "payload":{
+    "key":"f0",
+    "value":"Hola"
+  }
+
+}
+
+{
+
+  "commandId":"LOOKUP_KEY",
+  "payload":{
+    "key":"f0",
+    "replyTo":""
+  }
+
+}

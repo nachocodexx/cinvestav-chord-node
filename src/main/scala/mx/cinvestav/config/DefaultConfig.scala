@@ -3,7 +3,7 @@ package mx.cinvestav.config
 case class DefaultConfig(
                           nodeId:String,
                           chordId:Int,
-                          chordStep:Int,
+                          keysPerNode:Int,
                           poolId:String,
                           totalOfNodes:Int,
                           //

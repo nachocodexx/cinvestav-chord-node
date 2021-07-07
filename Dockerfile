@@ -1,11 +1,4 @@
 FROM openjdk:8-alpine
-#FROM nginx:alpine
-RUN apk add openjdk8
 COPY ./target/scala-2.13/chordnode.jar /app/src/app.jar
-COPY nginx.conf /etc/nginx/nginx.conf
-COPY entrypoint.sh /app/src
-RUN ["chmod","+x","/app/src/entrypoint.sh"]
 WORKDIR /app/src
-#ENTRYPOINT ["java", "-jar","app.jar"]
-ENTRYPOINT ["/app/src/entrypoint.sh"]
-#CMD ["nginx", "-g", "daemon off;"]
+ENTRYPOINT ["java", "-jar","/app/src/app.jar"]

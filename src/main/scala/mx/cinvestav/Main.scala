@@ -31,31 +31,43 @@ object Main extends IOApp{
       }
     }.compile.drain
 
+
   override def run(args: List[String]): IO[ExitCode] = RabbitMQUtils.init[IO](rabbitMQConfig){ implicit utils =>
     for {
       _             <- Logger[IO].debug(s"CHORD NODE[${config.nodeId}] is up and running 🚀")
-      chordInfo     = Chord.buildChordInfoById(config.chordId,config.chordStep)
+      chordInfo     = Chord.buildChordInfoById(config.chordId,config.keysPerNode)
+      successors    = Chord.seqChordInfo(config.keysPerNode,config.numberOfSuccessors)(config.totalOfNodes,config.chordId+_)
+      predecessors  = Chord.seqChordInfo(config.keysPerNode,config.numberOfPredecessors)(config.totalOfNodes,config.chordId-_)
+      fingerTable   = Chord.seqChordInfo(config.keysPerNode,config.totalOfNodes-1)(config.totalOfNodes,
+        incrementFn= (x=>config.chordId+math.pow(2,x-1).toInt)
+      ).filter(_.chordId!=config.chordId)
       initState     = NodeState(
-        chordInfo    = chordInfo,
-        fingerTable  = Map.empty[Int,ChordNodeInfo],
-        successor    = Chord.buildChordInfoById(
-          chordId = ((config.chordId+1)+config.totalOfNodes) % config.totalOfNodes,
-          step    = config.chordStep
-        ),
-        predecessor     = Chord.buildChordInfoById(
-          chordId = ((config.chordId-1)+config.totalOfNodes) % config.totalOfNodes,
-          step    = config.chordStep
-        ),
-        totalOfNodes =  config.totalOfNodes,
-        data         = Map.empty[String,String]
+        chordInfos    = chordInfo::Nil,
+        successors    = successors,
+        predecessors  = predecessors,
+        chordsData    = List(chordInfo)++successors++predecessors,
+        fingerTable   = fingerTable,
+//          Map.empty[Int,ChordNodeInfo],
+        totalOfNodes  = config.totalOfNodes,
+        data          = Map.empty[String,String],
+        totalOfKeyIds = config.totalOfNodes*config.keysPerNode
       )
       state         <- IO.ref(initState)
       ctx           = NodeContext(config= config,logger = unsafeLogger,utils=utils,state)
       _             <- ctx.logger.info(initState.toString)
-      routingKey    = s"${ctx.config.poolId}.${Chord.chordIdWithPrefix(config.chordId)}.default"
-      mainQueueName = s"${ctx.config.poolId}-${Chord.chordIdWithPrefix(config.chordId)}"
-      _             <- ctx.utils.createQueue(mainQueueName,config.poolId,ExchangeType.Topic,routingKey)
-     _ <- program(queueName = mainQueueName)(ctx=ctx)
+      globalChordQueue = s"${ctx.config.poolId}-chord"
+      globalChordRk = s"${ctx.config.poolId}.global.chord"
+      _ <- ctx.utils.createQueue(
+        queueName = globalChordQueue,
+        exchangeName = config.poolId,
+        exchangeType = ExchangeType.Topic,
+        routingKey = globalChordRk
+      )
+      _ <- program(queueName = globalChordQueue)(ctx).start
+      directRoutingKey    = s"${ctx.config.poolId}.chord.${Chord.chordIdWithPrefix(config.chordId)}"
+      directQueueName = s"${ctx.config.poolId}-${Chord.chordIdWithPrefix(config.chordId)}"
+      _             <- ctx.utils.createQueue(directQueueName,config.poolId,ExchangeType.Topic,directRoutingKey)
+      _  <- program(queueName = directQueueName)(ctx=ctx)
     } yield()
   }.as(ExitCode.Success)
 }
