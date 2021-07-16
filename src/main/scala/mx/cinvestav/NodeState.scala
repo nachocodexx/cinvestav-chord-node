@@ -7,7 +7,7 @@ case class NodeState(
                       chordsData:List[ChordNodeInfo],
                       successors:List[ChordNodeInfo],
                       predecessors:List[ChordNodeInfo],
-                      notFoundKeysCounter:Map[String,Boolean]=Map.empty[String,Boolean],
+//                      notFoundKeysCounter:Map[String,Boolean]=Map.empty[String,Boolean],
                       //
                       fingerTable:List[ChordNodeInfo],
 //                      Map[Int,ChordNodeInfo],

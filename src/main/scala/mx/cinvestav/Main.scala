@@ -13,8 +13,8 @@ import pureconfig.ConfigSource
 import pureconfig._
 import pureconfig.generic.auto._
 import fs2.hash
-import mx.cinvestav.CommandId
-import mx.cinvestav.handlers.{AddKeyHandler, LookupHandler}
+import mx.cinvestav.commons.commands.Identifiers
+import mx.cinvestav.handlers.{AddKeyHandler, LockHandler, LookupHandler}
 
 object Main extends IOApp{
   implicit val config: DefaultConfig  = ConfigSource.default.loadOrThrow[DefaultConfig]
@@ -22,12 +22,13 @@ object Main extends IOApp{
   case class NodeContext[F[_]](config: DefaultConfig,logger: Logger[F],utils: RabbitMQUtils[F],state:Ref[IO,NodeState])
   implicit val unsafeLogger: SelfAwareStructuredLogger[IO] = Slf4jLogger.getLogger[IO]
 
-  def program(queueName:String)(implicit ctx:NodeContext[IO]) =
+  def program(queueName:String)(implicit ctx:NodeContext[IO]): IO[Unit] =
     ctx.utils.consumeJson(queueName = queueName).evalMap { command =>
       command.commandId match {
-        case CommandId.ADD_KEY => AddKeyHandler(command)
-        case CommandId.LOOKUP => LookupHandler(command)
-        case _ => ctx.logger.error("COMMAND NOT FOUND")
+        case Identifiers.ADD_KEY => AddKeyHandler(command)
+        case Identifiers.LOOKUP  => LookupHandler(command)
+        case CommandId.LOCK    => LockHandler(command)
+        case _                 => ctx.logger.error("COMMAND NOT FOUND")
       }
     }.compile.drain
 
@@ -40,12 +41,12 @@ object Main extends IOApp{
       predecessors  = Chord.seqChordInfo(config.keysPerNode,config.numberOfPredecessors)(config.totalOfNodes,config.chordId-_)
       fingerTable   = Chord.seqChordInfo(config.keysPerNode,config.totalOfNodes-1)(config.totalOfNodes,
         incrementFn= (x=>config.chordId+math.pow(2,x-1).toInt)
-      ).filter(_.chordId!=config.chordId)
+      ).filter(_.chordId!=config.chordId).distinct
       initState     = NodeState(
         chordInfos    = chordInfo::Nil,
         successors    = successors,
         predecessors  = predecessors,
-        chordsData    = List(chordInfo)++successors++predecessors,
+        chordsData    = (successors++predecessors++fingerTable).distinct,
         fingerTable   = fingerTable,
 //          Map.empty[Int,ChordNodeInfo],
         totalOfNodes  = config.totalOfNodes,

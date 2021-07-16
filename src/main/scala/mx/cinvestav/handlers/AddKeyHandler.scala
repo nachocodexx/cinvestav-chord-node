@@ -22,16 +22,17 @@ class AddKeyHandler(command:Command[Json])(implicit ctx:NodeContext[IO]) extends
   def doestNotBelongsToMeFn(payload:AddKey,idChordNode:ChordNodeInfo):IO[Unit] = for {
     _ <- IO.unit
     cmd = CommandData[Json](command.commandId,command.payload)
+    lookupParams = Chord.LookupParams(id = payload.id,experimentId = payload.experimentId,key = payload.key,idChordNode=idChordNode,cmd=cmd)
     _ <- ctx.config.lookupPolicy match {
-      case Chord.policies.SIMPLE => Chord.simpleLookup(payload.key,idChordNode,cmd)
-      case Chord.policies.SCALABLE => Chord.scalableLookup(payload.key,idChordNode,cmd)
-      case Chord.policies.DEFAULT => Chord.defaultLookup(payload.key,idChordNode,cmd)
-      case _ => Chord.simpleLookup(payload.key,idChordNode,cmd)
+      case Chord.policies.SIMPLE => Chord.simpleLookup(lookupParams)
+      case Chord.policies.SCALABLE => Chord.scalableLookup(lookupParams)
+      case Chord.policies.DEFAULT => Chord.defaultLookup(lookupParams)
+      case _ => Chord.simpleLookup(lookupParams)
 //      case Chord.policies.DEFAULT =>
     }
   } yield ()
   def belongsToMeFn(payload:AddKey):IO[Unit] = for {
-    _ <- ctx.logger.debug(Identifiers.ADD_KEY+s" ${payload.key} ${payload.value}")
+    _ <- ctx.logger.debug(Identifiers.ADD_KEY+s" ${payload.id} ${payload.key} ${payload.value} ${payload.experimentId}")
     _ <- ctx.state.update(s=>s.copy(data =  s.data + (payload.key -> payload.value) ))
   } yield ()
 
@@ -54,6 +55,6 @@ class AddKeyHandler(command:Command[Json])(implicit ctx:NodeContext[IO]) extends
 }
 
 object AddKeyHandler{
-  def apply(command: Command[Json])(implicit ctx:NodeContext[IO]) =
+  def apply(command: Command[Json])(implicit ctx:NodeContext[IO]): IO[Unit] =
     new AddKeyHandler(command = command).handle()
 }

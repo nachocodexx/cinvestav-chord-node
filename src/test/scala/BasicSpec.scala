@@ -11,7 +11,7 @@ import mx.cinvestav.Chord.ChordNodeWithDistance
 import mx.cinvestav.Main.config
 import mx.cinvestav.commons.commands.CommandData
 import mx.cinvestav.config.DefaultConfig
-import mx.cinvestav.payloads.Payloads
+import mx.cinvestav.commons.payloads
 import mx.cinvestav.utils.RabbitMQUtils
 import mx.cinvestav.utils.RabbitMQUtils.dynamicRabbitMQConfig
 import mx.cinvestav.{Chord, ChordNodeInfo, CommandId}
@@ -20,11 +20,42 @@ import org.typelevel.log4cats.slf4j.Slf4jLogger
 import pureconfig.generic.auto._
 import pureconfig.ConfigSource
 
+import scala.concurrent.duration._
+import scala.language.postfixOps
+import fs2.{Stream, hash, text}
+
+import java.math.BigInteger
 import java.util.UUID
 class BasicSpec extends munit.CatsEffectSuite {
   implicit val config: DefaultConfig = ConfigSource.default.loadOrThrow[DefaultConfig]
   val rabbitMQConfig: Fs2RabbitConfig  = dynamicRabbitMQConfig(config.rabbitmq)
   implicit val unsafeLogger: SelfAwareStructuredLogger[IO] = Slf4jLogger.getLogger[IO]
+  case class MyKey(id:String,replicaIndex:Int)
+  test("Basic: Keys"){
+    val data:Map[MyKey,String] = Map(
+      MyKey("f00",0) -> "{\"nodes\":[\"sn0\",\"sn1\"]}",
+      MyKey("f00",1) -> "{\"nodes\":[\"sn0\",\"sn1\"]}",
+    )
+    val ht:Map[String,Int] = Map.empty[String,Int]
+    val h2 = ht.updatedWith("1")(_.map(_+1).orElse(Some(1)))
+    println(h2)
+  }
+
+
+  test("Basic:Hash"){
+    val fileId     = "f701a41d-13d2-486b-bb17-c11c8bd907b5" // 5 - 2 - 1 - 5 - 3 - 4 -5
+    val totalNodes = 3
+    val m          = 3*totalNodes
+    val hashFileId = Stream.emits("2".getBytes)
+      .covary[IO]
+      .through(hash.sha1)
+
+    hashFileId
+      .compile.to(Array)
+      .map(x=>new BigInteger(x))
+      .map(_.mod(new BigInteger(m.toString)))
+      .flatMap(IO.println)
+  }
 
   test("Basic: 00"){
     val app = Stream
@@ -50,17 +81,20 @@ class BasicSpec extends munit.CatsEffectSuite {
 
   test("Basic: 02"){
 //    val xs = List(false, false, true).find(identity)
-    val idChordNode = ChordNodeInfo(-1,10,10)
-    val chordNodeId = 2
-    val numbersOfNeighbors = 6
-    val totalOfNodes = 16
-    val successors = Chord.seqChordInfo(3,numbersOfNeighbors)(totalOfNodes,chordNodeId+_)
-    val predecessors = Chord.seqChordInfo(keyIdsPerNode = 3,numbersOfNeighbors)(totalOfNodes,chordNodeId-_)
-    val fingerTable = Chord.seqChordInfo(keyIdsPerNode = 3,numbersOfNeighbors)(totalOfNodes,
-      incrementFn= (x=>chordNodeId+math.pow(2,x-1).toInt))
-    println(fingerTable.filter(_.chordId!=2))
-    //    println(successors)
-    //    println(predecessors)
+    val idChordNode        = ChordNodeInfo(-1,15,15)
+    val chordNodeId        = 1
+    val numbersOfNeighbors = 2
+    val totalOfNodes       = 6
+    val successors         = Chord.seqChordInfo(keyIdsPerNode = 3,numbersOfNeighbors)(totalOfNodes,chordNodeId+_)
+    val predecessors       = Chord.seqChordInfo(keyIdsPerNode = 3,numbersOfNeighbors)(totalOfNodes,chordNodeId-_)
+    val fingerTable        = Chord.seqChordInfo(keyIdsPerNode = 3, totalOfNodes)(totalOfNodes,
+      incrementFn = (x => chordNodeId + math.pow(2, x - 1).toInt)).distinct
+    val data= (fingerTable.filter(_.chordId!=chordNodeId)++successors++predecessors).distinct
+//    println(fingerTable)
+    val res= Chord.getRelativeDistance(idChordNode,data)
+    println(res.sorted)
+//        println(successors)
+//        println(predecessors)
 
 //    val xs = ( 1 until (numbersOfNeighbors+1))
 //      .map(chordNodeId+_)
@@ -94,29 +128,31 @@ class BasicSpec extends munit.CatsEffectSuite {
 
   test("Example"){
     RabbitMQUtils.init[IO](rabbitMQConfig){ implicit utils =>
-      val key           = "814efcac-e35e-41c8-bee6-0d0c49fbb47d"
-      val chordId       = "ch-4"
-      val addKeyPayload = Payloads.AddKey(key,"sn-00")
-      val addKeyCmd     = CommandData[Json](CommandId.ADD_KEY,addKeyPayload.asJson)
-      val lookupKeyPayload= Payloads.Lookup(key,"testing","pool-xxxx")
-      val lookupCmd = CommandData[Json](CommandId.LOOKUP,lookupKeyPayload.asJson)
-      val poolId = "pool-xxxx"
+      val poolId           = "pool-xxxx"
+      val key              = "f_01"
+      val chordId          = "ch-4"
+      val experimentId     = 100
+      val addKeyPayload    = payloads.AddKey(id="op_00",experimentId = experimentId,key=key,value="sn-00")
+      val addKeyCmd        = CommandData[Json](CommandId.ADD_KEY,addKeyPayload.asJson)
+      val lookupKeyPayload = payloads.Lookup(id = "op_00",key=key,replyTo = "testing",exchangeName = poolId,experimentId = experimentId,lookupTrace = Nil)
+      val lookupCmd         = CommandData[Json](CommandId.LOOKUP,lookupKeyPayload.asJson)
       for {
         _            <- Logger[IO].info("INIT!")
         chordNodePub <- utils.createPublisher(poolId,s"$poolId.global.chord")
-//        _ <- utils.createQueue(
-//          queueName = "testing",
-//          exchangeName ="pool-xxxx" ,
-//          exchangeType =ExchangeType.Topic ,
-//          routingKey = "testing"
-//        )
-        _ <- chordNodePub(addKeyCmd.asJson.noSpaces)
-//        _ <- chordNodePub(lookupCmd.asJson.noSpaces)
-//        _ <- utils.consumeJson("testing")
-//          .evalMap{ data=>
-//            Logger[IO].info(data.toString)
-//          }
-//          .compile.drain
+        _ <- utils.createQueue(
+          queueName = "testing",
+          exchangeName =poolId ,
+          exchangeType =ExchangeType.Topic ,
+          routingKey = "testing"
+        )
+//        _ <- chordNodePub(addKeyCmd.asJson.noSpaces)
+//        _ <- IO.sleep(2 seconds)
+        _ <- chordNodePub(lookupCmd.asJson.noSpaces)
+        _ <- utils.consumeJson("testing")
+          .evalMap{ data=>
+            Logger[IO].info(data.toString)
+          }
+          .compile.drain
 
       } yield ()
     }
