@@ -11,4 +11,6 @@ case class DefaultConfig(
                           numberOfPredecessors:Int,
                           lookupPolicy:String,
                           rabbitmq: RabbitMQConfig,
+                          chordM:Int,
+                          chordRingLength:Int
                         )

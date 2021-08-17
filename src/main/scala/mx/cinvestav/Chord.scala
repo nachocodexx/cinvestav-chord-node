@@ -9,6 +9,8 @@ import io.circe.generic.auto._
 import mx.cinvestav.Main.NodeContext
 import mx.cinvestav.commons.commands.CommandData
 import mx.cinvestav.payloads.Payloads.AddKey
+
+import java.math.BigInteger
 object Chord {
   object policies {
     final val SIMPLE   = "simple"
@@ -23,6 +25,7 @@ object Chord {
   }
   case class ChordNodeWithDistance(chordNodeInfo: ChordNodeInfo,distance:Int)
   case class LookupParams(id:String,experimentId:Int,key:String, idChordNode:ChordNodeInfo,cmd:CommandData[Json])
+  case class LookupParamsV2(id:String, experimentId:Int, key:String, fileHashId:BigInteger, cmd:CommandData[Json])
   case class RedirectParams(id:String,experimentId:Int,key:String,chordNodeInfo: ChordNodeInfo,cmd:CommandData[Json])
 
   implicit val chordNodeWithDistanceOrdered: Order[ChordNodeWithDistance] = Order.from[ChordNodeWithDistance]{ (x, y)=>
@@ -48,6 +51,13 @@ object Chord {
     xs :+ ChordNodeWithDistance(chordNode,distance)
   }
 
+  def buildFingerTable()(implicit ctx:NodeContext[IO]) = for {
+    currentState    <- ctx.state.get
+    chordHashId     = currentState.chordHashId
+    chordM          = ctx.config.chordM
+    chordRingLength = ctx.config.chordRingLength
+
+  } yield ()
   //  case object
   def buildChordInfoById(chordId:Int, step:Int = 10):ChordNodeInfo = {
     val start = chordId*step
@@ -75,18 +85,22 @@ object Chord {
     )
     _            <- publisher.publish(params.cmd.asJson.noSpaces)
   } yield ()
-//  def simpleLookup(key:String, idChordNode:ChordNodeInfo,cmd:CommandData[Json])(implicit ctx:NodeContext[IO]):IO[Unit] = for {
+
+  def simpleLookupV2(params: LookupParamsV2)(implicit ctx:NodeContext[IO]):IO[Unit] = for {
+    currentState <- ctx.state.get
+//    successorsDistances = Chord.getRelativeDistance(params.idChordNode,currentState.successors).foldLeft(0)((total,node)=>total+node.distance)
+//    predecessorsDistance = Chord.getRelativeDistance(params.idChordNode,currentState.predecessors).foldLeft(0)((total,node)=>total+node.distance)
+//    redirectParams = (node:ChordNodeInfo)=>RedirectParams(id= params.id,experimentId =params.experimentId,key=params.key,chordNodeInfo =node,cmd=params.cmd)
+//    _ <- if(successorsDistances < predecessorsDistance) redirect(redirectParams(currentState.successors.head))
+//    else redirect(redirectParams(currentState.predecessors.head))
+  } yield ()
     def simpleLookup(params: LookupParams)(implicit ctx:NodeContext[IO]):IO[Unit] = for {
-//    _ <- ctx.logger.debug(s"SIMPLE_LOOKUP_POLICY ${params.id} ${params.idChordNode} ${params.experimentId}")
     currentState <- ctx.state.get
     successorsDistances = Chord.getRelativeDistance(params.idChordNode,currentState.successors).foldLeft(0)((total,node)=>total+node.distance)
     predecessorsDistance = Chord.getRelativeDistance(params.idChordNode,currentState.predecessors).foldLeft(0)((total,node)=>total+node.distance)
     redirectParams = (node:ChordNodeInfo)=>RedirectParams(id= params.id,experimentId =params.experimentId,key=params.key,chordNodeInfo =node,cmd=params.cmd)
-//    cmd          = CommandData[Json](command.commandId,command.payload)
     _ <- if(successorsDistances < predecessorsDistance) redirect(redirectParams(currentState.successors.head))
-//      redirect(params.key,currentState.successors.head,params.cmd)
     else redirect(redirectParams(currentState.predecessors.head))
-//      redirect(params.key,currentState.predecessors.head,params.cmd)
   } yield ()
   def defaultLookup(params: LookupParams)(implicit ctx:NodeContext[IO]):IO[Unit] = for {
 //    _ <- ctx.logger.debug("DEFAULT_LOOKUP_POLICY")

@@ -12,9 +12,11 @@ import org.typelevel.log4cats.{Logger, SelfAwareStructuredLogger}
 import pureconfig.ConfigSource
 import pureconfig._
 import pureconfig.generic.auto._
-import fs2.hash
+import fs2.{Stream, hash}
 import mx.cinvestav.commons.commands.Identifiers
 import mx.cinvestav.handlers.{AddKeyHandler, LockHandler, LookupHandler}
+
+import java.math.BigInteger
 
 object Main extends IOApp{
   implicit val config: DefaultConfig  = ConfigSource.default.loadOrThrow[DefaultConfig]
@@ -36,13 +38,17 @@ object Main extends IOApp{
   override def run(args: List[String]): IO[ExitCode] = RabbitMQUtils.init[IO](rabbitMQConfig){ implicit utils =>
     for {
       _             <- Logger[IO].debug(s"CHORD NODE[${config.nodeId}] is up and running 🚀")
+      idHashValue   <- Stream.emits(config.nodeId.getBytes).covary[IO].through(hash.sha1).compile.to(Array)
+      chordHashId   = new BigInteger(idHashValue).mod(new BigInteger(config.chordRingLength.toString))
+      _             <- Logger[IO].debug(chordHashId.toString)
       chordInfo     = Chord.buildChordInfoById(config.chordId,config.keysPerNode)
       successors    = Chord.seqChordInfo(config.keysPerNode,config.numberOfSuccessors)(config.totalOfNodes,config.chordId+_)
       predecessors  = Chord.seqChordInfo(config.keysPerNode,config.numberOfPredecessors)(config.totalOfNodes,config.chordId-_)
       fingerTable   = Chord.seqChordInfo(config.keysPerNode,config.totalOfNodes-1)(config.totalOfNodes,
         incrementFn= (x=>config.chordId+math.pow(2,x-1).toInt)
       ).filter(_.chordId!=config.chordId).distinct
-      initState     = NodeState(
+      initState       = NodeState(
+        chordHashId   = chordHashId ,
         chordInfos    = chordInfo::Nil,
         successors    = successors,
         predecessors  = predecessors,
@@ -51,7 +57,8 @@ object Main extends IOApp{
 //          Map.empty[Int,ChordNodeInfo],
         totalOfNodes  = config.totalOfNodes,
         data          = Map.empty[String,String],
-        totalOfKeyIds = config.totalOfNodes*config.keysPerNode
+        totalOfKeyIds = config.totalOfNodes*config.keysPerNode,
+        fingerTableV2 = Map.empty[BigInteger,BigInteger]
       )
       state         <- IO.ref(initState)
       ctx           = NodeContext(config= config,logger = unsafeLogger,utils=utils,state)

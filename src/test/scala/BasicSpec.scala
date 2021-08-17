@@ -38,7 +38,10 @@ class BasicSpec extends munit.CatsEffectSuite {
     )
     val ht:Map[String,Int] = Map.empty[String,Int]
     val h2 = ht.updatedWith("1")(_.map(_+1).orElse(Some(1)))
-    println(h2)
+    val n = new BigInteger("1000")
+    val m = new BigInteger("100")
+    println(n.compareTo(m))
+//    println(h2)
   }
 
 
