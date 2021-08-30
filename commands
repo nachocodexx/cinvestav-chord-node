@@ -1,7 +1,65 @@
+LOOKUP
+{
+  "key":"FILE_ID",
+  "timestamp":0
+}
+______________________________________-
+ADD_KEY
+{
+  "key":"f0",
+  "value":{
+  "fileId" : "f0",
+  "filename" : "my_book",
+  "sizeIn" : 100,
+  "sizeOut" : 20,
+  "extension" : "pdf",
+  "compressionAlgorithm" : "LZ4",
+  "replicationFactor" : 2,
+  "chunks" : [
+    {
+      "chunkId" : "cds1212_0",
+      "index" : 0,
+      "sizeOut" : 0,
+      "sizeIn" : 0,
+      "compressionAlgorithm" : "LZ4",
+      "locations" : [
+        {
+          "url" : "http://69.0.0.1/download",
+          "source" : "/sn-0/ch0/ch0_0"
+        }
+      ]
+    }
+  ],
+  "userId" : "u0",
+  "version" : 1,
+  "timestamp" : 0
+},
+"timestamp":0
+}
+_______________________________________________________________
+
+{
+  "key":"f0",
+  "value":{
+     "fileId":"f0",
+     "filename":"my_book",
+     "extension":"pdf",
+     "size":0,
+     "compressionAlgorithm":"LZ4",
+     "replicationFactor":2,
+     "chunks":[],
+     "userId":"u0",
+     "version":1,
+     "timestamp":0
+  }
+}
+
+_____________________________________________________________________
 {
 
   "commandId":"ADD_KEY",
   "payload":{
+
     "key":"f0",
     "value":"Hola"
   }

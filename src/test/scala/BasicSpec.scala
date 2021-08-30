@@ -14,7 +14,7 @@ import mx.cinvestav.config.DefaultConfig
 import mx.cinvestav.commons.payloads
 import mx.cinvestav.utils.RabbitMQUtils
 import mx.cinvestav.utils.RabbitMQUtils.dynamicRabbitMQConfig
-import mx.cinvestav.{Chord, ChordNodeInfo, CommandId}
+import mx.cinvestav.{Chord, ChordNodeInfo, CommandId, Helpers}
 import org.typelevel.log4cats.{Logger, SelfAwareStructuredLogger}
 import org.typelevel.log4cats.slf4j.Slf4jLogger
 import pureconfig.generic.auto._
@@ -23,14 +23,79 @@ import pureconfig.ConfigSource
 import scala.concurrent.duration._
 import scala.language.postfixOps
 import fs2.{Stream, hash, text}
+import mx.cinvestav.Declarations.{ChordNode, DefaultConfigV5, FingerTableEntry}
 
 import java.math.BigInteger
 import java.util.UUID
 class BasicSpec extends munit.CatsEffectSuite {
-  implicit val config: DefaultConfig = ConfigSource.default.loadOrThrow[DefaultConfig]
-  val rabbitMQConfig: Fs2RabbitConfig  = dynamicRabbitMQConfig(config.rabbitmq)
+  implicit val config: DefaultConfigV5 = ConfigSource.default.loadOrThrow[DefaultConfigV5]
+  val rabbitMQConfig: Fs2RabbitConfig  = RabbitMQUtils.parseRabbitMQClusterConfig(config.rabbitmq)
   implicit val unsafeLogger: SelfAwareStructuredLogger[IO] = Slf4jLogger.getLogger[IO]
   case class MyKey(id:String,replicaIndex:Int)
+
+
+  test("Chord"){
+    val m      = 3
+    val slots  = new BigInteger("360")
+//    val one
+    //  "ch-EiIRBUKfQCIJ",
+    //  "ch-FVZ9e4CteXht",
+    //  "ch-Jww5yzGJzYWe",
+    //  "ch-oMThk35aOzfG",
+    //  "ch-evkjQPHZevEa"
+
+//    val chIds  = List("ch-EiIRBUKfQCIJ","ch-FVZ9e4CteXht","ch-Jww5yzGJzYWe","ch-oMThk35aOzfG","ch-evkjQPHZevEa")
+    val chIds  = List("ch-0","ch-1","ch-2")
+    val chIdsS = Stream.emits(chIds)
+    val chHashes = chIdsS.covary[IO].evalMap(x=>
+      Stream.emits(x.getBytes)
+        .covary[IO]
+        .through(hash.sha1)
+        .compile
+        .to(Array)
+        .map(x=>new BigInteger(x))
+        .map(_.mod( slots))
+    )
+//      .debug(x=>s"CHORD_HASH $x")
+    val range  = (0 until m)
+    val two    = new BigInteger("2")
+//      slots.subtract(BigInteger.ONE ).intValue()
+
+    (chHashes zip chIdsS).map{
+      case (hash,chId)=>
+      val fingerTable = range.map{ x=>
+        two.pow(x).add(hash).mod(slots)
+      }.toList
+      ( ChordNode(nodeId = chId, hash=hash),fingerTable )
+    }.debug(x=> s"CHORD_HASH ${x._1}")
+      .compile
+      .toVector
+      .map{ x=>x.flatMap{
+        case (node, fingerTable) =>
+//         CHORD NODES
+          val chordNodes        = x.map(_._1).toList
+//        SORTED FT
+          val sortedFingerTable = fingerTable.sorted
+//         LOWES VALUE IN FT
+          val lowestFTItem      = sortedFingerTable.min
+//         GET ALL GREATER NODES
+          val filteredChordNodes = chordNodes.filter(x=>Helpers.isGreaterThan(x.hash ,lowestFTItem)).sortBy(_.hash)
+//
+          if(filteredChordNodes.isEmpty)  fingerTable.map(x=>FingerTableEntry(chordNodes.minBy(_.hash),x))
+          else filteredChordNodes.foldLeft(List.empty[FingerTableEntry]){ (ft,chordNode) =>
+            val fingerTableFiltered = fingerTable.toSet.diff(ft.map(_.value).toSet)
+            val relativeLowerHashes = fingerTableFiltered.filter(x=>Helpers.lowerOrEqual(x,chordNode.hash))
+            val newEntries = relativeLowerHashes.map(x=> FingerTableEntry(chordNode,x)).toList
+//            println(s"NEW_ENTRIES: ${newEntries.map(_.value).mkString(",")}")
+//            println(s"R_LOWES[${chordNode.hash}]: ${relativeLowerHashes.mkString(" // ")}")
+            ft ++ newEntries
+          }
+      }
+      }
+      .flatMap(fts=>IO.println(fts.mkString(" // \n")+"\n")  )
+
+  }
+
   test("Basic: Keys"){
     val data:Map[MyKey,String] = Map(
       MyKey("f00",0) -> "{\"nodes\":[\"sn0\",\"sn1\"]}",
