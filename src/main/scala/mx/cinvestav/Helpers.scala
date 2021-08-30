@@ -6,18 +6,20 @@ import cats.effect.IO
 import dev.profunktor.fs2rabbit.model.AmqpFieldValue.StringVal
 import dev.profunktor.fs2rabbit.model.{AmqpMessage, AmqpProperties, ExchangeName, RoutingKey}
 import fs2.{Stream, hash}
-import mx.cinvestav.Declarations.{ChordNode, FingerTableEntry, NodeContextV5, NodeError, NodeStateV5}
+import mx.cinvestav.Declarations.{ChordNode, DefaultConfigV5, FingerTableEntry, NodeContextV5, NodeError, NodeStateV5,LookupResult=>LRes}
 import mx.cinvestav.commons.types.{LookupResult, Metadata}
+//import mx.cinvestav.Declarations
 import mx.cinvestav.commons.liftFF
 import org.typelevel.log4cats.Logger
 
 import java.math.BigInteger
 import mx.cinvestav.commons.nodes.Node
-import mx.cinvestav.utils.v2.{PublisherConfig, PublisherV2, fromNodeToPublisher}
+import mx.cinvestav.utils.v2.{PublisherConfig, PublisherV2, RabbitMQContext, fromNodeToPublisher}
 import io.circe._
 import io.circe.generic.auto._
 import io.circe.syntax._
 import mx.cinvestav.commons.payloads.{v2 => payloads}
+import mx.cinvestav.payloads.Payloads
 import mx.cinvestav.utils.v2.encoders._
 
 object Helpers {
@@ -46,34 +48,40 @@ object Helpers {
 
   def foundKey(key:String,replyTo:String,arrivalTime:Long=0L,visitedNodes:List[String]=Nil)(implicit ctx:NodeContextV5) = {
     for {
-//      REPLY TO = ECHANGE_NAME.ROUTING_KEY = load_balancer/lb-0
-      timestamp <- IO.realTime.map(_.toMillis)
+//      REPLY TO = ECHANGE_NAME/SEGMENT_ROUTING_KEY = load_balancer/lb-0
+      timestamp    <- IO.realTime.map(_.toMillis)
       currentState <- ctx.state.get
       value        = currentState.data.get(key)
+//     Provisional
       replyToSplit = replyTo.split('/')
-      exchange     = replyToSplit(0)
+      exchange     = replyToSplit.headOption.getOrElse("test")
       exchangeName = ExchangeName(exchange)
+      rk           = replyToSplit.tail.headOption.getOrElse("test")
       routingKey   = RoutingKey(exchange+"."+replyToSplit(1))
-
+//
       publisherConf = PublisherConfig(exchangeName = exchangeName,routingKey = routingKey)
       publisher     = PublisherV2(publisherConf)(ctx.rabbitContext)
 //
 
       _            <- value match {
         case Some(value) =>   for {
-          _         <- IO.unit
-          properties    = AmqpProperties(headers = Map("commandId"->StringVal("KEY_FOUND")))
-          payload   = payloads.KeyFound(key,value,timestamp).asJson.noSpaces
-          message   = AmqpMessage[String](payload = payload,properties = properties)
-          _         <- publisher.publish(message)
-          _         <- ctx.logger.info(s"KEY_FOUND $key ${arrivalTime-timestamp}")
+          _          <- IO.unit
+          properties = AmqpProperties(headers = Map("commandId"->StringVal("KEY_FOUND")))
+          payload    = payloads.KeyFound(key,value,timestamp).asJson.noSpaces
+          message    = AmqpMessage[String](payload = payload,properties = properties)
+          _          <- publisher.publish(message).handleErrorWith{ t=>
+            ctx.logger.error(t.getMessage)
+          }
+          _          <- ctx.logger.info(s"KEY_FOUND $key ${arrivalTime-timestamp}")
         } yield ( )
         case None => for {
           _             <- ctx.logger.error(s"KEY_NOT_FOUND $key ${visitedNodes.length+1} ${arrivalTime-timestamp}")
           properties    = AmqpProperties(headers = Map("commandId"->StringVal("KEY_NOT_FOUND")))
           payload       = payloads.KeyNotFound(key,visitedNodes = visitedNodes,timestamp=timestamp).asJson.noSpaces
           msg           = AmqpMessage[String](payload=payload,properties=properties)
-          _             <- publisher.publish(msg)
+          _             <- publisher.publish(msg).handleErrorWith{ t=>
+            ctx.logger.error(t.getMessage)
+          }
         } yield ()
       }
     } yield ()
@@ -127,12 +135,12 @@ object Helpers {
   } yield ()
 
 
-  def lookup(nextChordId:String,key:String,replyTo:String,messageId:String,visitedNodes:List[String]=Nil)(implicit ctx:NodeContextV5) = for {
+  def lookup(nextChordNode:ChordNode,key:String,replyTo:String,messageId:String,visitedNodes:List[String]=Nil)(implicit ctx:NodeContextV5) = for {
     timestamp  <- IO.realTime.map(_.toMillis)
     nodeId     = ctx.config.nodeId
-    poolId     = ctx.config.poolId
-    chordNode  = Node(poolId = poolId,nextChordId)
-    publisher  = fromNodeToPublisher(chordNode)(ctx.rabbitContext)
+//    poolId     = ctx.config.poolId
+//    chordNode  = Node(poolId = poolId,nextChordId)
+//    publisher  = fromNodeToPublisher(chordNode)(ctx.rabbitContext)
     updatedVisitedNodes = visitedNodes.filter(_.nonEmpty) :+ nodeId
     properties = AmqpProperties(
       headers = Map(
@@ -144,7 +152,7 @@ object Helpers {
     )
     payload    = payloads.Lookup(key=key,timestamp = timestamp).asJson.noSpaces
     message    = AmqpMessage[String](payload = payload,properties =properties)
-    _          <- publisher.publish(message)
+    _          <- nextChordNode.publisher.traverse(_.publish(message))
   } yield ()
 
 
@@ -161,39 +169,74 @@ object Helpers {
 //      NODE_ID
       nodeId = ctx.config.nodeId
 //     NODE_HASH
-      chordNodeHash = currentState.nodeIdHash
+      chordNodeHash = currentState.chordNode.hash
 //     FINGER_TABLE
       fingerTable   = currentState.fingerTable
 //      hashes        = currentState.nodesHashes
 //     NUMBER OF SLOTS
       slots         = new BigInteger(ctx.config.chordSlots.toString)
 //     HASH_KEY
-      hashKey       <- liftFF[BigInteger,E](Helpers.strToHashId(key,slots))
+      hashKey       <- liftFF[BigInteger,E](Helpers.strToHash(key,slots))
 //      fingerTableV  = fingerTable.filter(x=>Helpers.isGreaterThanOrEqual(x._1,hashKey))
 //    BELONGS TO ME IF HASH_KEY < NODE_HASH
 //
-      lastFingerTableItem = fingerTable.toList.sortBy(_.hash).lastOption
+      sortedFT = fingerTable.toList.sortBy(_.chordNode.hash)
+      lastFingerTableItem = sortedFT.lastOption
 //      otherChordNode = fingerTable.filter(x=> !visitedNodes.contains(x._2) ).filter(x=>Helpers.isSuccessor(x._1,hashKey))
-      filteredFingerTable = fingerTable.filter(x=>Helpers.isGreaterThanOrEqual(x.hash,hashKey))
+      filteredFingerTable = fingerTable.filter(x=>Helpers.isGreaterThanOrEqual(x.chordNode.hash,hashKey))
       _ <- L.debug(filteredFingerTable.toString())
       otherChordNode = filteredFingerTable
         .toList
-        .sortBy(_.hash)
+        .sortBy(_.chordNode.hash)
         .headOption
         .getOrElse(lastFingerTableItem.get)
 
-      successor  =  fingerTable.toList.minBy(_.hash)
+      successor  =  fingerTable.toList.minBy(_.chordNode.hash)
 
       _          <- L.debug(successor.toString)
-      belongsToMe   = Helpers.lowerOrEqual(chordHashId = chordNodeHash,hashKey)
+      belongsToMe   = Helpers.lowerOrEqual(x = chordNodeHash,hashKey)
 //        Helpers.lowerOrEqual(chordNodeHash,otherChordNode._1)
-      lookupChordResult = LookupResult(hashKey,belongsToMe = belongsToMe,belongsToOthers = otherChordNode.nodeId)
+      lookupChordResult = LookupResult(hashKey,belongsToMe = belongsToMe,belongsToOthers = otherChordNode.chordNode.nodeId)
 
     } yield lookupChordResult
 
     }
 
-    def strToHashId(x:String, slots:BigInteger): IO[BigInteger] ={
+
+//
+  def closestPrecedingNode(chordNode: ChordNode,key:BigInteger,fingerTable:List[FingerTableEntry])={
+    fingerTable.sortBy(_.value).reverse.filter{ x=>
+      val  fTEntryValue = x.value
+      Helpers.isGreaterThan(fTEntryValue,chordNode.hash) && Helpers.isLowerThan(fTEntryValue,key)
+    }.map(_.chordNode).sortBy(_.hash).headOption.getOrElse(chordNode)
+  }
+  //      val properties = AmqpProperties(headers = Map("commandId" -> StringVal("LOOKUP")) )
+  //      val payload    = payloads.Lookup
+  //      val message = AmqpMessage[String](payload ="",properties = properties)
+  //      successor.chordNode.publisher.traverse(_.publish())
+  def findSuccessor(mSlots:Int,n:ChordNode,key:BigInteger,fingerTable:List[FingerTableEntry])= {
+    val successor         = fingerTable.minBy(_.value)
+    val successorNodeHash = successor.chordNode.hash
+    val segment           = Helpers.generateSegment(n.hash,successorNodeHash,mSlots).map(x=>new BigInteger(x.toString)).toSet
+//    BELONGS TO THE SUCCESSOR
+    if(segment.contains(key)) LRes(key,successor.chordNode)
+    else {
+      val newN = Helpers.closestPrecedingNode(n,key,fingerTable)
+//    Belongs to this node
+      if(newN.nodeId == n.nodeId)  LRes(key,n,true)
+//     Belongs to another node
+      else LRes(key,newN,false)
+
+    }
+  }
+  def generateSegment(x:BigInteger,y:BigInteger,m:Int): List[Int] = {
+      if(Helpers.isLowerThan(x,y))
+        ((x.intValue() until y.intValue()+1)).toList
+      else
+        ((0 until y.intValue()+1).toList ++ (x.intValue() until m)  .toList  )  .sorted
+    }
+//
+    def strToHash(x:String, slots:BigInteger): IO[BigInteger] ={
 //    val slots = new BigInteger(ctx.config.chordSlots.toString)
     Stream
       .emits(x.getBytes)
@@ -202,12 +245,21 @@ object Helpers {
       .compile.toVector.map(x=>new BigInteger(x.toArray).mod(slots) )
   }
 
-  def createChordNodesFromList(xs:List[String],slots:BigInteger): IO[List[ChordNode]] = xs.traverse(x=>Helpers.strToHashId(x,slots).map(id => ChordNode(x,id) ))
+  def createChordNodesFromList(xs:List[String],slots:BigInteger)(implicit config:DefaultConfigV5, rabbitContext:RabbitMQContext): IO[List[ChordNode]] =
+    xs.traverse{ x=>
+      val poolId          = config.poolId
+      val rk              = RoutingKey(s"$poolId.$x")
+      val exchangeName    = ExchangeName(config.poolId)
+      val publisherConfig = PublisherConfig(exchangeName = exchangeName,routingKey =rk)
+//    ________________________________________________________________________________________
+      val publisher = PublisherV2.create(x,publisherConfig)
+      Helpers.strToHash(x,slots).map(id => ChordNode(x,id,publisher = publisher.some) )
+    }
 
 
 
-  def equal(chordHashId:BigInteger, id:BigInteger): Boolean ={
-    id.compareTo(chordHashId) match {
+  def equal(x:BigInteger, id:BigInteger): Boolean ={
+    x.compareTo(id) match {
       case -1 => false
       case  0 => true
       case  1 => false
@@ -215,15 +267,15 @@ object Helpers {
   }
 
 
-  def lower(chordHashId:BigInteger, id:BigInteger): Boolean ={
-    id.compareTo(chordHashId) match {
+  def isLowerThan(x:BigInteger, id:BigInteger): Boolean ={
+    x.compareTo(id) match {
       case -1 => true
       case  0 => false
       case  1 => false
     }
   }
-  def lowerOrEqual(chordHashId:BigInteger, id:BigInteger): Boolean ={
-    chordHashId.compareTo(id) match {
+  def lowerOrEqual(x:BigInteger, id:BigInteger): Boolean ={
+    x.compareTo(id) match {
       case -1 => true
       case  0 => true
       case  1 => false
@@ -232,28 +284,19 @@ object Helpers {
 
 
 
-  def isGreaterThanOrEqual(chordHashId:BigInteger, id:BigInteger): Boolean ={
-    chordHashId.compareTo(id) match {
+  def isGreaterThanOrEqual(x:BigInteger, id:BigInteger): Boolean ={
+    x.compareTo(id) match {
       case -1 => false
       case  0 => true
       case  1 => true
     }
   }
-  def isGreaterThan(chordHashId:BigInteger, id:BigInteger): Boolean ={
-    chordHashId.compareTo(id) match {
+  def isGreaterThan(x:BigInteger, id:BigInteger): Boolean ={
+    x.compareTo(id) match {
       case -1 => false
       case  0 => false
       case  1 => true
     }
-  }
-  def recFindSuccessors(chordHashIds:List[(String,BigInteger)], mRange2i:List[BigInteger]): List[(BigInteger, String)] ={
-    mRange2i.traverse{ x=>
-      chordHashIds.sortBy(_._2)
-        .find{ y=>    isGreaterThan(y._2,x) }.map{
-        case (chordID, hashID) =>
-          (x,chordID)
-      }
-    }.getOrElse(Nil)
   }
 
   def createFingerTable(chordN:ChordNode, m:Int, slots:BigInteger, chordNodes:Map[String,ChordNode]): List[FingerTableEntry] ={
@@ -275,34 +318,6 @@ object Helpers {
       //            println(s"R_LOWES[${chordNode.hash}]: ${relativeLowerHashes.mkString(" // ")}")
       ft ++ newEntries
     }
-
-//    val res   =  chordNodes.map{
-//      case (str, node) =>
-//        val hash = node.hash
-//        (node,range.map{ x=>two.pow(x).add(hash).mod(slots)}.toList  )
-//    }.map{
-//      case (node, fingerTable) =>
-//        //        SORTED FT
-//    }
-//    res.toList
-//    IO.unit
-//   val chordHashesIOs = chordNodeIds.traverse(strToHashId(_,slots))
-//    chordHashesIOs.map(chordNodeIds zip _).map{ chordHashes=>
-//      1
-//    for {
-//      _ <- IO.unit
-//      mRange       = (0 until (m-1)).toList
-//      two          = new BigInteger("2")
-//      mRange2i     = mRange.map(i=>two.pow(i).add(chordHashId).mod(slots))
-//      _            <- IO.println(mRange2i)
-//      chordHashIds <- chordNodeIds.traverse(strToHashId(_,slots))
-////        .map(_.sorted)
-////      x            =
-//      _  <- IO.println(chordHashIds)
-////      _  <- ctx.l(chordHashIds)
-//      xs = recFindSuccessors(chordNodeIds zip chordHashIds, mRange2i)
-////      _  <- IO.println(xs)
-//    } yield xs.toMap
 
   }
 

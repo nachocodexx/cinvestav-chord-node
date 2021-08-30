@@ -2,7 +2,7 @@ import cats.Order
 import cats.implicits._
 import cats.effect._
 import dev.profunktor.fs2rabbit.config.Fs2RabbitConfig
-import dev.profunktor.fs2rabbit.model.ExchangeType
+import dev.profunktor.fs2rabbit.model.{ExchangeName, ExchangeType, RoutingKey}
 import fs2.Stream
 import io.circe.Json
 import io.circe.syntax._
@@ -24,6 +24,7 @@ import scala.concurrent.duration._
 import scala.language.postfixOps
 import fs2.{Stream, hash, text}
 import mx.cinvestav.Declarations.{ChordNode, DefaultConfigV5, FingerTableEntry}
+import mx.cinvestav.utils.v2.{PublisherConfig, PublisherV2, RabbitMQContext}
 
 import java.math.BigInteger
 import java.util.UUID
@@ -33,6 +34,44 @@ class BasicSpec extends munit.CatsEffectSuite {
   implicit val unsafeLogger: SelfAwareStructuredLogger[IO] = Slf4jLogger.getLogger[IO]
   case class MyKey(id:String,replicaIndex:Int)
 
+
+  test("Segement") {
+    val start   = new BigInteger("359")
+    val end     = new BigInteger("50")
+    val segment = ((start.intValue() until 360 ).toList ++ (0 until end.intValue()+1).toList).sorted
+    val segment2 = Helpers.generateSegment(start,end,360)
+//    val segment2 = generateSegment(new BigInteger("1"),new BigInteger("10"),360)
+    println(segment)
+    println(segment2)
+  }
+
+  test("Find successor"){
+
+
+
+//    val currentChordNode = ChordNode("ch-0",new BigInteger("50"),None)
+//    val currentChordNode = ChordNode("ch-2",new BigInteger("72"),None)
+    val currentChordNode = ChordNode("ch-1",new BigInteger("359"),None)
+//    val seventyTwo = new BigInteger("72")
+//    val threeHundred59 = new BigInteger("359")
+    val fifty = new BigInteger("50")
+    val fingerTable = List(
+
+      FingerTableEntry(ChordNode("ch-0",fifty,None), new BigInteger("0") ),
+      FingerTableEntry(ChordNode("ch-0",fifty,None), new BigInteger("1") ),
+      FingerTableEntry(ChordNode("ch-0",fifty,None), new BigInteger("3") )
+//
+//      FingerTableEntry(ChordNode("ch-1",threeHundred59,None), new BigInteger("73") ),
+//      FingerTableEntry(ChordNode("ch-1",threeHundred59,None), new BigInteger("74") ),
+//      FingerTableEntry(ChordNode("ch-1",threeHundred59,None), new BigInteger("76") )
+//      ______________________________________
+//      FingerTableEntry(ChordNode("ch-2",seventyTwo,None), new BigInteger("51") ),
+//      FingerTableEntry(ChordNode("ch-2",seventyTwo,None), new BigInteger("52") ),
+//      FingerTableEntry(ChordNode("ch-2",seventyTwo,None), new BigInteger("54") )
+    )
+    val res = Helpers.findSuccessor(360,currentChordNode,new BigInteger("73"),fingerTable)
+    println(res)
+  }
 
   test("Chord"){
     val m      = 3
@@ -66,7 +105,7 @@ class BasicSpec extends munit.CatsEffectSuite {
       val fingerTable = range.map{ x=>
         two.pow(x).add(hash).mod(slots)
       }.toList
-      ( ChordNode(nodeId = chId, hash=hash),fingerTable )
+      ( ChordNode(nodeId = chId, hash=hash,None),fingerTable )
     }.debug(x=> s"CHORD_HASH ${x._1}")
       .compile
       .toVector

@@ -41,7 +41,7 @@ object CommandHandlers {
           .getOrElse("timestamp",LongVal(timestamp))
           .toValueWriterCompatibleJava.asInstanceOf[Long]
         currentState  <- maybeCurrentState
-        chordNodeHash = currentState.nodeIdHash
+        chordNodeHash = currentState.chordNode.hash
         fingerTable   = currentState.fingerTable
         key          = payload.key
         value        = payload.value
@@ -105,36 +105,41 @@ object CommandHandlers {
       val app = for {
 //       TIMESTAMP
         timestamp     <- liftFF[Long,E](IO.realTime.map(_.toMillis))
-//       NODE_ID
+        //       NODE_ID
         nodeId        = ctx.config.nodeId
-//       CURRENT_STATE
+        //       CURRENT_STATE
         currentState  <- maybeCurrentState
-//       INITIAL_TIME
+        //       INITIAL_TIME
         initialTime  = envelope.properties.headers
            .getOrElse("timestamp",LongVal(timestamp))
            .toValueWriterCompatibleJava.asInstanceOf[Long]
-//       REPLY_TO
+        //       REPLY_TO
         replyTo       <- maybeReplyTo
-//       NODE_HASH
-        chordNodeHash = currentState.nodeIdHash
-//      NUM_CHORD_NODES
+        //       NODE_HASH
+        chordNodeHash = currentState.chordNode.hash
+        //      NUM_CHORD_NODES
         chordNodesLen = ctx.config.chordNodes.length
-//       KEY
+        //       KEY
         key           = payload.key
-//
-        lookupResult <- Helpers.localLookup(key)
+        hashedKey     <- liftFF[BigInteger,E](Helpers.strToHash(key,new BigInteger(ctx.config.chordSlots.toString)))
+        //
+        //        lookupResult <- Helpers.localLookup(key)
+        lookupResult      = Helpers.findSuccessor(ctx.config.chordSlots,currentState.chordNode,hashedKey,currentState.fingerTable)
         _             <- L.info(s"LOOKUP_LATENCY $messageId $key ${timestamp - payload.timestamp} ${timestamp-timestamp}")
-//      ___________________________________________________________________________
+        //      ___________________________________________________________________________
         _             <- L.debug(s"MESSAGE_ID $messageId")
         _             <- L.debug(s"CHORD_HASH_ID $chordNodeHash")
-        _             <- L.debug(s"HASH_KEY ${lookupResult.hashKey}")
-        _             <- L.debug(s"KEY_BELONGS_ME ${lookupResult.belongsToMe}")
-        _             <- L.debug(s"KEY_BELONGS_OTHERS ${lookupResult.belongsToOthers}")
+        _             <- L.debug(s"HASH_KEY $hashedKey")
+        //        _             <- L.debug(s"KEY_BELONGS_ME ${lookupResult.belongsToMe}")
+        _             <- L.debug(s"KEY_BELONGS_ME_v2 ${lookupResult.belongsToMe}")
+        //        _             <- L.debug(s"KEY_BELONGS_OTHERS ${lookupResult.belongsToOthers}")
+        _             <- L.debug(s"KEY_BELONGS ${lookupResult.chordNode.nodeId}")
         _             <- L.debug(s"VISITED_NODES ${visitedNodes.mkString(",")}")
-//      ______________________________________________________________________________
+        //      ______________________________________________________________________________
         _             <- if(visitedNodes.length == chordNodesLen)  liftFF[Unit,E](Helpers.keyNotFound(key=key,replyTo = replyTo,arrivalTime = initialTime,visitedNodes = visitedNodes))
-                        else if(lookupResult.belongsToMe && lookupResult.belongsToOthers == nodeId) liftFF[Unit,E](Helpers.foundKey(key,replyTo,visitedNodes=visitedNodes,arrivalTime =initialTime ))
-                        else liftFF[Unit,E](Helpers.lookup(lookupResult.belongsToOthers,key,replyTo,messageId,visitedNodes))
+                        else if(lookupResult.belongsToMe ) liftFF[Unit,E](Helpers.foundKey(key,replyTo,visitedNodes=visitedNodes,arrivalTime =initialTime ))
+                        else liftFF[Unit,E](Helpers.lookup(lookupResult.chordNode,key,replyTo,messageId,visitedNodes=visitedNodes))
+//                        else liftFF[Unit,E](Helpers.lookup(lookupResult.belongsToOthers,key,replyTo,messageId,visitedNodes))
       } yield ()
       app.value.stopwatch.flatMap{ res=>
         res.result match {

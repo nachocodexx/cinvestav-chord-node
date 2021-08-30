@@ -8,7 +8,7 @@ import dev.profunktor.fs2rabbit.model.{AmqpEnvelope, ExchangeName, QueueName, Ro
 import mx.cinvestav.Declarations.{ChordNode, DefaultConfigV5, NodeContextV5, NodeStateV5}
 import mx.cinvestav.commons.balancer.LoadBalancer
 import mx.cinvestav.utils.RabbitMQUtils
-import mx.cinvestav.utils.v2.{Acker, Exchange, MessageQueue, RabbitMQContext, RawAcker}
+import mx.cinvestav.utils.v2.{Acker, Exchange, MessageQueue, PublisherConfig, PublisherV2, RabbitMQContext, RawAcker}
 import org.typelevel.log4cats.slf4j.Slf4jLogger
 import org.typelevel.log4cats.{Logger, SelfAwareStructuredLogger}
 import pureconfig.ConfigSource
@@ -83,13 +83,14 @@ object MainV5 extends IOApp{
             routingKey = routingKey
           )
           //         __________________________________________________________
-
           maxSlots      = new BigInteger(config.chordSlots.toString)
-          nodeIdHash    <- Helpers.strToHashId(config.nodeId,maxSlots)
+          nodeIdHash    <- Helpers.strToHash(config.nodeId,maxSlots)
           nodeId        = config.nodeId
-          chordNode     = ChordNode(nodeId,nodeIdHash)
+          publisherCfg  = PublisherConfig(exchangeName = exchangeName,routingKey=routingKey)
+          publisher     = PublisherV2.create(nodeId,publisherCfg)
+          chordNode     = ChordNode(nodeId,nodeIdHash,publisher.some)
           nodeIds       = config.chordNodes.filter(_!= nodeId)
-          hashes <-  Helpers.createChordNodesFromList(nodeIds,maxSlots).map(nodeIds zip _ ).map(_.toMap)
+          hashes        <-  Helpers.createChordNodesFromList(nodeIds,maxSlots).map(nodeIds zip _ ).map(_.toMap)
 //          nodesToHashes <- Helpers.createChordNodesFromList(config.chordNodes.filter(_!=config.nodeId),maxSlots)
           fingerTable = Helpers.createFingerTable(
             chordN     = chordNode,
@@ -101,8 +102,9 @@ object MainV5 extends IOApp{
            _ <- Logger[IO].debug(fingerTable.toString)
           initState       = NodeStateV5(
             ip          = InetAddress.getLocalHost.getHostAddress,
-            nodeIdHash  = nodeIdHash,
-            fingerTable =  Nil,
+            chordNode = chordNode,
+//            nodeIdHash  = nodeIdHash,
+            fingerTable =  fingerTable,
 //              fingerTable,
             nodesHashes =  hashes
           )
