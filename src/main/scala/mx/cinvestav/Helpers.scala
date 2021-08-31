@@ -3,10 +3,10 @@ package mx.cinvestav
 import cats.data.EitherT
 import cats.implicits._
 import cats.effect.IO
-import dev.profunktor.fs2rabbit.model.AmqpFieldValue.StringVal
+import dev.profunktor.fs2rabbit.model.AmqpFieldValue.{LongVal, StringVal}
 import dev.profunktor.fs2rabbit.model.{AmqpMessage, AmqpProperties, ExchangeName, RoutingKey}
 import fs2.{Stream, hash}
-import mx.cinvestav.Declarations.{ChordNode, DefaultConfigV5, FingerTableEntry, NodeContextV5, NodeError, NodeStateV5,LookupResult=>LRes}
+import mx.cinvestav.Declarations.{ChordNode, DefaultConfigV5, FingerTableEntry, NodeContextV5, NodeError, NodeStateV5, LookupResult => LRes}
 import mx.cinvestav.commons.types.{LookupResult, Metadata}
 //import mx.cinvestav.Declarations
 import mx.cinvestav.commons.liftFF
@@ -87,44 +87,45 @@ object Helpers {
     } yield ()
   }
 
-  def addKey(initialTime:Long,visitedNodes:List[String],messageId:String,chordNodeId:String,key:String,value:Metadata)(implicit ctx:NodeContextV5): IO[Unit] = for {
+  def addKey(initialTime:Long,visitedNodes:List[String],messageId:String,chordNode:ChordNode,key:String,value:Metadata)(implicit ctx:NodeContextV5): IO[Unit] = for {
     timestamp  <- IO.realTime.map(_.toMillis)
     nodeId     = ctx.config.nodeId
     poolId     = ctx.config.poolId
-    chordNode  = Node(poolId = poolId,chordNodeId)
-    publisher  = fromNodeToPublisher(chordNode)(ctx.rabbitContext)
+//    chordNode  = Node(poolId = poolId,chordNodeId)
+//    publisher  = fromNodeToPublisher(chordNode)(ctx.rabbitContext)
     updatedVisitedNodes = visitedNodes.filter(_.nonEmpty) :+ nodeId
-    _          <- if(chordNodeId==nodeId)  for {
+//    _          <- if(chordNodeId==nodeId)  for {
       _          <- ctx.logger.info(s"ADD_KEY_ATTEMPT $messageId $key ${timestamp - initialTime}")
-      exchangeName = ExchangeName(poolId)
-      routingKey = RoutingKey(s"$poolId.default")
-      cfg = PublisherConfig(exchangeName,routingKey)
-      pub = PublisherV2(cfg)(ctx.rabbitContext)
+//      exchangeName = ExchangeName(poolId)
+//      routingKey = RoutingKey(s"$poolId.default")
+//      cfg = PublisherConfig(exchangeName,routingKey)
+//      pub = PublisherV2(cfg)(ctx.rabbitContext)
       properties = AmqpProperties(
         headers = Map(
           "commandId"->StringVal("ADD_KEY"),
-          "visitedNodes" -> StringVal(updatedVisitedNodes.mkString(","))
+          "visitedNodes" -> StringVal(updatedVisitedNodes.mkString(",")),
+          "timestamp" -> LongVal(initialTime)
         ),
         messageId = messageId.some
       )
       payload    = payloads.AddKey(key,value,timestamp = timestamp).asJson.noSpaces
       message    = AmqpMessage[String](payload = payload,properties =properties)
-      _ <- pub.publish(message)
-
-    } yield ()
-    else  for {
-      _          <- ctx.logger.info(s"ADD_KEY_ATTEMPT $messageId $key ${timestamp - initialTime}")
-      properties = AmqpProperties(
-        headers = Map(
-          "commandId"->StringVal("ADD_KEY"),
-          "visitedNodes" -> StringVal(updatedVisitedNodes.mkString(","))
-        ),
-        messageId = messageId.some
-      )
-      payload    = payloads.AddKey(key,value,timestamp = timestamp).asJson.noSpaces
-      message    = AmqpMessage[String](payload = payload,properties =properties)
-      _          <- publisher.publish(message)
-    } yield ()
+      x <- chordNode.publisher.traverse(_.publish(message))
+//
+//    } yield ()
+//    else  for {
+//      _          <- ctx.logger.info(s"ADD_KEY_ATTEMPT $messageId $key ${timestamp - initialTime}")
+//      properties = AmqpProperties(
+//        headers = Map(
+//          "commandId"->StringVal("ADD_KEY"),
+//          "visitedNodes" -> StringVal(updatedVisitedNodes.mkString(","))
+//        ),
+//        messageId = messageId.some
+//      )
+//      payload    = payloads.AddKey(key,value,timestamp = timestamp).asJson.noSpaces
+//      message    = AmqpMessage[String](payload = payload,properties =properties)
+//      _          <- publisher.publish(message)
+//    } yield ()
   } yield ()
 
   def localAddKey(messageId:String,key:String, metadata: Metadata,initialTime:Long)(implicit ctx:NodeContextV5): IO[Unit] = for {

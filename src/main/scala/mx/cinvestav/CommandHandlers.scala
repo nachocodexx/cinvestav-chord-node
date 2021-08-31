@@ -17,6 +17,8 @@ import mx.cinvestav.commons.payloads.{v2 => payloads}
 
 import java.math.BigInteger
 import java.util.UUID
+//NgXAYtSd7JK6
+//$1$9IMYrTig$iUET1Vy6lDq2t7m1K4amL1
 
 object CommandHandlers {
 
@@ -35,36 +37,47 @@ object CommandHandlers {
       implicit val rabbitMQContext = ctx.rabbitContext
       implicit val logger          = ctx.logger
       val L                        = Logger.eitherTLogger[IO,E]
+//
       val app = for {
+//      TIMESTAMP
         timestamp     <- liftFF[Long,E](IO.realTime.map(_.toMillis))
+//      INIT_TIME
         initialTime  = envelope.properties.headers
           .getOrElse("timestamp",LongVal(timestamp))
           .toValueWriterCompatibleJava.asInstanceOf[Long]
+//      CURRENT_STATE
         currentState  <- maybeCurrentState
         chordNodeHash = currentState.chordNode.hash
         fingerTable   = currentState.fingerTable
+//      PAYLOAD
         key          = payload.key
         value        = payload.value
-        lookupResult <- Helpers.localLookup(key)
+        mSlots       = new BigInteger(ctx.config.chordSlots.toString)
+        hashedKey    <- liftFF[BigInteger,NodeError](Helpers.strToHash(key,mSlots))
+        n            = currentState.chordNode
+//        lookupResult <- Helpers.localLookup(key)
+        lookupResult = Helpers.findSuccessor(mSlots = mSlots.intValue(),n=n,key=hashedKey,fingerTable = fingerTable)
 //        messageId    = ""
         _            <- L.info(s"ADD_KEY_LATENCY $messageId $key ${timestamp - payload.timestamp} ${timestamp - initialTime}")
         //      ___________________________________________________________________________
         _             <- L.debug(s"CHORD_HASH_ID $chordNodeHash")
-        _             <- L.debug(s"HASH_KEY ${lookupResult.hashKey}")
+        _             <- L.debug(s"HASH_KEY $hashedKey")
         _             <- L.debug(s"KEY_BELONGS_ME ${lookupResult.belongsToMe}")
-        _             <- L.debug(s"KEY_BELONGS_OTHERS ${lookupResult.belongsToOthers}")
+        _             <- L.debug(s"KEY_BELONGS_v2 ${lookupResult.chordNode.nodeId}")
+//        _             <- L.debug(s"KEY_BELONGS_OTHERS ${lookupResult.belongsToOthers}")
         _             <- L.debug(s"VALUE $value")
 //        _             <- L.debug(s"VISITED_NODES ${visitedNodes.mkString(",")}")
         //      ______________________________________________________________________________
-        _             <- if(lookupResult.belongsToMe)  liftFF[Unit,NodeError](Helpers.localAddKey(messageId,key,value,initialTime))
+        _             <- if(lookupResult.belongsToMe)
+                              liftFF[Unit,NodeError](Helpers.localAddKey(messageId,key,value,initialTime))
                         else liftFF[Unit,E](Helpers.addKey(
-            messageId   = messageId,
-            chordNodeId =  lookupResult.belongsToOthers,
-            key         = key,
-            value       = value,
-            initialTime = initialTime,
-          visitedNodes  = visitedNodes
-          )
+                                    messageId   = messageId,
+                                    chordNode =  lookupResult.chordNode,
+                                    key         = key,
+                                    value       = value,
+                                    initialTime = initialTime,
+                                    visitedNodes  = visitedNodes
+                        )
         )
       } yield (lookupResult)
       app.value.stopwatch.flatMap{ res=>
