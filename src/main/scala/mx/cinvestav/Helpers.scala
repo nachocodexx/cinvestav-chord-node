@@ -11,16 +11,15 @@ import mx.cinvestav.commons.types.{LookupResult, Metadata}
 //import mx.cinvestav.Declarations
 import mx.cinvestav.commons.liftFF
 import org.typelevel.log4cats.Logger
-
 import java.math.BigInteger
-import mx.cinvestav.commons.nodes.Node
-import mx.cinvestav.utils.v2.{PublisherConfig, PublisherV2, RabbitMQContext, fromNodeToPublisher}
+import mx.cinvestav.utils.v2.{PublisherConfig, PublisherV2, RabbitMQContext}
 import io.circe._
 import io.circe.generic.auto._
 import io.circe.syntax._
 import mx.cinvestav.commons.payloads.{v2 => payloads}
 import mx.cinvestav.payloads.Payloads
 import mx.cinvestav.utils.v2.encoders._
+import mx.cinvestav.commons.security.SecureX
 
 object Helpers {
 
@@ -211,10 +210,7 @@ object Helpers {
       Helpers.isGreaterThan(fTEntryValue,chordNode.hash) && Helpers.isLowerThan(fTEntryValue,key)
     }.map(_.chordNode).sortBy(_.hash).headOption.getOrElse(chordNode)
   }
-  //      val properties = AmqpProperties(headers = Map("commandId" -> StringVal("LOOKUP")) )
-  //      val payload    = payloads.Lookup
-  //      val message = AmqpMessage[String](payload ="",properties = properties)
-  //      successor.chordNode.publisher.traverse(_.publish())
+
   def findSuccessor(mSlots:Int,n:ChordNode,key:BigInteger,fingerTable:List[FingerTableEntry])= {
     val successor         = fingerTable.minBy(_.value)
     val successorNodeHash = successor.chordNode.hash
@@ -237,13 +233,16 @@ object Helpers {
         ((0 until y.intValue()+1).toList ++ (x.intValue() until m)  .toList  )  .sorted
     }
 //
-    def strToHash(x:String, slots:BigInteger): IO[BigInteger] ={
+  def strToHash(x:String, slots:BigInteger): IO[BigInteger] ={
+    SecureX.sha1(x.getBytes)
+      .map(x=>new BigInteger(x)).map(_.mod(slots))
 //    val slots = new BigInteger(ctx.config.chordSlots.toString)
-    Stream
-      .emits(x.getBytes)
-      .covary[IO]
-      .through(hash.sha1)
-      .compile.toVector.map(x=>new BigInteger(x.toArray).mod(slots) )
+//    Stream
+//      .emits(x.getBytes)
+//      .covary[IO]
+//      .through(hash.sha1)
+    //      .compile.to(Array)
+    //      .toVector.map(x=>new BigInteger(x.toArray).mod(slots) )
   }
 
   def createChordNodesFromList(xs:List[String],slots:BigInteger)(implicit config:DefaultConfigV5, rabbitContext:RabbitMQContext): IO[List[ChordNode]] =
