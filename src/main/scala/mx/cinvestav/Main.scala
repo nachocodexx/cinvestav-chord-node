@@ -29,8 +29,8 @@ object Main extends IOApp{
       command.commandId match {
         case Identifiers.ADD_KEY => AddKeyHandler(command)
         case Identifiers.LOOKUP  => LookupHandler(command)
-        case CommandId.LOCK    => LockHandler(command)
-        case _                 => ctx.logger.error("COMMAND NOT FOUND")
+        case CommandId.LOCK      => LockHandler(command)
+        case _                   => ctx.logger.error("COMMAND NOT FOUND")
       }
     }.compile.drain
 
